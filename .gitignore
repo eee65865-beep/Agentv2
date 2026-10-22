@@ -1,0 +1,68 @@
+# Secrets and local Streamlit configuration
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python / tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Packaging / runtime outputs
+build/
+dist/
+*.egg-info/
+outputs/
+exports/
+artifacts/
+logs/
+*.log
+
+# Editor / OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Preserve protection for the accidentally named local environment file
+,env
+
+# Personal study notes and unimplemented design proposals
+/docs/*.md
+!/docs/architecture.md
+!/docs/workflow.md
+!/docs/agent_design.md
+!/docs/testing.md
+
+# Local assistant sessions, instructions, credentials and history
+.agents/
+.codex/
+.claude/
+.cursor/
+.aws/
+AGENTS.md
+CLAUDE.md
+.aider*
+.codex-history*
+*.jsonl
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+.history/
+history/
+sessions/
+checkpoints/

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77,<85"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-agent-workflow-studio"
+version = "0.1.0"
+description = "A layered LangGraph software development workflow powered by DeepSeek"
+readme = "README.md"
+requires-python = ">=3.11,<4"
+dependencies = [
+    "langchain==1.4.3",
+    "langgraph==1.2.14",
+    "langchain-deepseek==1.1.1",
+    "openai==3.26.0",  # SDK exception types used by the DeepSeek adapter
+    "streamlit==1.65.0",
+    "pydantic==2.13.5",
+    "python-dotenv==1.2.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-config --strict-markers --basetemp=.pytest_cache/tmp"
