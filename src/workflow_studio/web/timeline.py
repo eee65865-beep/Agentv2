@@ -9,8 +9,8 @@ from workflow_studio.state.workflow import WorkflowEvent
 from workflow_studio.web.controller import friendly_error
 
 LABELS = {"requirements_agent": "Requirements Agent", "design_agent": "Design Agent", "coding_agent": "Coding Agent", "review_agent": "Code Review Agent"}
-EVENT_LABELS = {"started": "开始执行", "completed": "执行完成", "failed": "执行失败", "info": "信息", "initialized": "初始化"}
-STATUS_LABELS = {"pending": "等待中", "running": "运行中", "completed": "已完成", "failed": "执行失败", "completed_with_issues": "已完成但审查未通过"}
+EVENT_LABELS = {"started": "开始执行", "completed": "执行完成", "failed": "执行失败", "info": "信息", "initialized": "初始化", "stopped": "已停止", "waiting": "等待澄清"}
+STATUS_LABELS = {"pending": "等待中", "running": "运行中", "completed": "已完成", "failed": "执行失败", "completed_with_issues": "已完成但审查未通过", "stopped": "已停止", "waiting": "等待澄清"}
 LOCAL = timezone(timedelta(hours=8))
 
 
@@ -39,7 +39,7 @@ def render_timeline(events: list[WorkflowEvent]) -> None:
         "时间（UTC+8）": format_time(event.timestamp),
         "Agent": LABELS.get(event.agent_name, "Workflow"),
         "事件": EVENT_LABELS[event.event_type], "修复轮次": event.revision_count,
-        "节点状态": {"started": "运行中", "completed": "已完成", "failed": "执行失败"}.get(event.event_type, "—"),
+        "节点状态": {"started": "运行中", "completed": "已完成", "failed": "执行失败", "stopped": "已停止"}.get(event.event_type, "—"),
         "Workflow 状态": STATUS_LABELS[event.status],
         "耗时（秒）": f"{event.elapsed_seconds:.3f}" if event.elapsed_seconds is not None else "—",
         "模型": event.model_name or "不可用",
@@ -61,7 +61,7 @@ def render_timeline(events: list[WorkflowEvent]) -> None:
     last = selected_events[-1]
     with st.container(border=True):
         st.markdown("**" + LABELS[selected] + "**")
-        st.write("节点状态：" + {"started": "运行中", "completed": "已完成", "failed": "执行失败"}.get(last.event_type, "等待中"))
+        st.write("节点状态：" + {"started": "运行中", "completed": "已完成", "failed": "执行失败", "stopped": "已停止"}.get(last.event_type, "等待中"))
         st.caption("运行 ID：" + last.run_id)
         st.caption("模型：" + (last.model_name or "不可用"))
         st.write("开始时间：" + format_time(last.started_at))
@@ -84,3 +84,10 @@ def render_timeline(events: list[WorkflowEvent]) -> None:
                 "总 Token": tokens(call.usage.total_tokens),
             } for index, call in enumerate(last.llm_calls, 1)], hide_index=True, width="stretch")
         st.caption("不可用表示服务未返回该用量或没有可观察的调用；部分调用缺失用量时，不将已知小计当作完整总数。")
+        if last.repair_receipt is not None:
+            repair = last.repair_receipt
+            st.markdown("**增量文件修复**")
+            st.caption(f"规范化补丁 {repair.normalized_patch_bytes} 字节 · 合并完整产物 {repair.merged_artifact_bytes} 字节 · 保留 {repair.preserved_file_count} 个未修改文件 · 格式失败 {repair.format_failures} 次")
+            st.caption("输入仍保留完整需求、接口与代码；字节对比不等于实测 Token 或费用节省。")
+            st.dataframe([{"操作": item.operation, "路径": item.path, "问题": ", ".join(item.issue_ids)} for item in repair.changes], hide_index=True, width="stretch")
+            st.caption("基线：" + repair.base_artifact_digest + " · 新产物：" + repair.result_artifact_digest)

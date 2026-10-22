@@ -42,6 +42,8 @@ class ExportLimitError(ValueError):
 
 
 MESSAGES = {
+    "CheckpointConflictError": "任务正在其他执行中、检查点已变化或当前状态不允许此操作；请重新打开已保存任务后继续。",
+    "CheckpointError": "无法读取或继续检查点；请确认任务标识、版本及本地存储状态。",
     "LLMConfigurationError": "API 配置无效或 Key 缺失，请检查 .env。",
     "LLMAuthenticationError": "API 认证或权限失败，请检查 Key 和账户权限；不会自动重试认证错误。",
     "LLMRateLimitError": "API 请求受到限流，有限重试已结束，请稍后手动重试。",

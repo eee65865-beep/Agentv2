@@ -10,6 +10,12 @@ SYSTEM_PROMPT = """优先简洁表达，避免重复描述和无关扩展；必�
 只能在 assumptions 中以“假设：”或“待确认：”标注。未说明的非功能需求和限制用空列表。
 项目名称未指定时给出暂定名称，并在 assumptions 标注该名称待确认。
 验收条件须具体、可验证、追溯到明确需求，避免擅自增加范围或杜撰量化指标。
+contract_version 必须为整数 2。requirement_details 与 functional_requirements 的文字一一对应，
+首次分配唯一 FR-1、FR-2 等编号，每项 source_quotes 必须逐字摘录 user_request 中支持该功能的连续原文。
+acceptance_details 与 acceptance_criteria 的文字一一对应，分配唯一 AC-1、AC-2 等编号，
+用 requirement_ids 关联已定义 FR；每个确认功能必须至少被一个验收条件覆盖，不得虚构引用。
+open_questions 只列影响范围、约束或验收的具体待确认问题，并标 blocking；低风险默认值放 assumptions，不强制提问。
+没有待澄清内容时输出空列表。输入含用户澄清时以回答为准，问题文字本身不是用户确认事实；已解决问题不要再次提出。
 使用与用户需求一致的语言，输出完整结构化需求对象。JSON 回退时只输出 JSON，不要 Markdown 或解释。
 输出字段与校验要求：
 {format_instructions}"""

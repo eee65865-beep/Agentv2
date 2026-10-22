@@ -24,6 +24,7 @@ from openai import (
 from pydantic import BaseModel, ValidationError
 
 from workflow_studio.config import Settings, load_settings
+from workflow_studio.budget import BudgetPersistenceError, RunStopped, budgeted_call, report_token_usage
 from workflow_studio.llm.errors import (
     LLMAuthenticationError,
     LLMCallError,
@@ -38,7 +39,7 @@ from workflow_studio.llm.errors import (
 )
 
 from workflow_studio.llm.retry_policy import DeepSeekRetryClient
-from workflow_studio.llm.options import current_thinking_mode
+from workflow_studio.llm.options import current_model_profile, current_thinking_mode
 from workflow_studio.llm.telemetry import record_llm_call
 from workflow_studio.state.telemetry import LLMCallRecord, TokenUsage
 
@@ -141,6 +142,7 @@ class DeepSeekClient:
         except Exception:
             raise LLMConfigurationError("Cannot initialize DeepSeek client. Check configuration and installed SDK versions.") from None
 
+    @budgeted_call
     def invoke(self, prompt: LanguageModelInput) -> AIMessage:
         """Call DeepSeek, returning the original message and token metadata.
 
@@ -158,6 +160,9 @@ class DeepSeekClient:
                 raise TypeError("Expected an AIMessage")
             _reject_truncated(message)
             return message
+        except (RunStopped, BudgetPersistenceError) as error:
+            status = type(error).__name__
+            raise
         except Exception as error:
             translated = _translate_error(error)
             status = type(translated).__name__
@@ -168,6 +173,7 @@ class DeepSeekClient:
     def _log_call(self, message: AIMessage | None, started: float, status: str) -> None:
         """Use the same credential-safe telemetry for plain and structured calls."""
         input_tokens, output_tokens, total_tokens = _token_counts(message)
+        report_token_usage(total_tokens if total_tokens is not None else input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None)
         elapsed = perf_counter() - started
         record_llm_call(LLMCallRecord(
             model_name=self.model_name, elapsed_seconds=elapsed, status=status,
@@ -179,6 +185,7 @@ class DeepSeekClient:
             input_tokens, output_tokens, total_tokens,
         )
 
+    @budgeted_call
     def invoke_structured(self, prompt: LanguageModelInput, schema: type[OutputT]) -> OutputT:
         """Prefer LangChain tool-based output, retaining raw messages for telemetry.
 
@@ -209,6 +216,9 @@ class DeepSeekClient:
                 return schema.model_validate(parsed)
             except ValidationError:
                 raise LLMStructuredOutputError("Structured response did not satisfy the requested schema.") from None
+        except (RunStopped, BudgetPersistenceError) as error:
+            status = type(error).__name__
+            raise
         except (LLMStructuredOutputError, LLMStructuredOutputUnsupported) as error:
             status = type(error).__name__
             raise
@@ -233,6 +243,9 @@ def get_llm(settings: Settings | None = None) -> DeepSeekClient:
         resolved = settings if settings is not None else load_settings()
     except ValidationError:
         raise LLMConfigurationError("Invalid DeepSeek configuration. Check model, URL, temperature, timeout and retry count in .env/environment.") from None
+    profile = current_model_profile()
+    if profile is not None:
+        resolved = Settings.model_validate({**resolved.model_dump(), **profile, "deepseek_api_key": resolved.deepseek_api_key})
     override = current_thinking_mode()
     if override is not None:
         resolved = resolved.model_copy(update={"deepseek_thinking": override})

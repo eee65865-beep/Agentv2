@@ -14,7 +14,7 @@ from workflow_studio.llm.errors import (
     LLMAuthenticationError, LLMCallError, LLMNetworkError, LLMRateLimitError,
     LLMStructuredOutputError, LLMStructuredOutputUnsupported,
 )
-from workflow_studio.state.requirements import RequirementsOutput
+from workflow_studio.state.requirements import RequirementsOutput, RequirementsOutputV2
 
 REQUEST = "开发一个待办事项应用，支持新增任务、标记完成和删除任务，数据只保存在本地。"
 
@@ -29,6 +29,18 @@ def output_data() -> dict[str, object]:
         "constraints": ["数据只保存在本地"],
         "assumptions": ["假设：项目名称暂定为待办事项应用，待用户确认。"],
         "acceptance_criteria": ["新增任务后能看到该任务", "标记完成后可观察到完成状态", "删除后不再显示任务"],
+        "contract_version": 2,
+        "open_questions": [],
+        "requirement_details": [
+            {"id": "FR-1", "description": "新增任务", "source_quotes": ["新增任务"]},
+            {"id": "FR-2", "description": "标记任务为已完成", "source_quotes": ["标记完成"]},
+            {"id": "FR-3", "description": "删除任务", "source_quotes": ["删除任务"]},
+        ],
+        "acceptance_details": [
+            {"id": "AC-1", "description": "新增任务后能看到该任务", "requirement_ids": ["FR-1"]},
+            {"id": "AC-2", "description": "标记完成后可观察到完成状态", "requirement_ids": ["FR-2"]},
+            {"id": "AC-3", "description": "删除后不再显示任务", "requirement_ids": ["FR-3"]},
+        ],
     }
 
 
@@ -44,12 +56,12 @@ def llm(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 def test_native_structured_output(output_data: dict[str, object], llm: MagicMock) -> None:
     expected = RequirementsOutput.model_validate(output_data)
     llm.invoke_structured.return_value = expected
-    assert analyze_requirements(REQUEST) is expected
+    assert analyze_requirements(REQUEST).model_dump() == expected.model_dump()
     llm.factory.assert_called_once_with()
     llm.invoke.assert_not_called()
     llm.invoke_structured.assert_called_once()
     prompt, schema = llm.invoke_structured.call_args.args
-    assert schema is RequirementsOutput
+    assert schema is RequirementsOutputV2
     messages = prompt.to_messages()
     assert messages[0].type == "system"
     assert messages[1].type == "human"

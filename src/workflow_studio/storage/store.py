@@ -91,7 +91,7 @@ class RunStore:
             raise CorruptRunError("too_many_events")
         archive = ReviewArchive.model_validate(bodies["review.json"]) if metadata.review_enabled else None
         result = WorkflowResult.model_validate({
-            "run_id": run_id, "status": metadata.status, "error": metadata.error,
+            "run_id": run_id, "status": metadata.status, "error": metadata.error, "budget": metadata.budget, "clarifications": metadata.clarifications,
             "requirements": bodies["requirements.json"], "design": bodies["design.json"], "code": bodies["code.json"], "events": events,
             "review_enabled": metadata.review_enabled, "revision_count": metadata.revision_count,
             "max_revisions": metadata.max_revisions, "review_status": metadata.review_status,
@@ -135,6 +135,7 @@ class RunStore:
                 files["review.json"] = _encode(ReviewArchive(latest=result.review, history=result.review_history).model_dump(mode="json"))
             trace = summarize_run(result.events)
             metadata = RunMetadata(
+                schema_version=3 if result.clarifications else 2 if result.budget is not None else 1, budget=result.budget, clarifications=result.clarifications,
                 run_id=result.run_id, status=result.status, error=result.error,
                 saved_at=datetime.now(timezone.utc), started_at=trace.started_at, ended_at=trace.ended_at,
                 elapsed_seconds=elapsed, user_request=request, model_name=model_name,

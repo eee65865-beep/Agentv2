@@ -61,7 +61,7 @@ def test_native_design(requirements: RequirementsOutput, design_data: dict[str, 
     before = requirements.model_dump()
     llm.invoke_structured.return_value = expected
     result = design_system(requirements)
-    assert result is expected
+    assert result == expected
     assert result.architecture_overview.strip()
     assert result.preserved_constraints == requirements.constraints
     assert all(module.name and module.responsibility for module in result.modules)
@@ -227,6 +227,18 @@ def test_invalid_schema(field: str, value: object, design_data: dict[str, object
 
 
 def test_requirements_to_design_dependency(requirements: RequirementsOutput, design_data: dict[str, object], llm: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    from workflow_studio.state.requirements import RequirementsOutputV2
+    requirements = RequirementsOutputV2.model_validate({
+        **requirements.model_dump(), "contract_version": 2,
+        "requirement_details": [
+            {"id": f"FR-{index}", "description": text, "source_quotes": [quote]}
+            for index, (text, quote) in enumerate(zip(requirements.functional_requirements, ["新增", "完成", "删除"]), 1)
+        ],
+        "acceptance_details": [
+            {"id": f"AC-{index}", "description": text, "requirement_ids": [f"FR-{index}"]}
+            for index, text in enumerate(requirements.acceptance_criteria, 1)
+        ],
+    })
     requirements_llm = MagicMock()
     requirements_llm.invoke_structured.return_value = requirements
     monkeypatch.setattr("workflow_studio.agents.requirements_agent.get_llm", lambda: requirements_llm)

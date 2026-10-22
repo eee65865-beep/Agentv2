@@ -7,6 +7,20 @@ from typing import Literal
 
 ThinkingMode = Literal["enabled", "disabled"]
 _thinking_mode: ContextVar[ThinkingMode | None] = ContextVar("workflow_thinking_mode", default=None)
+_profile: ContextVar[dict | None] = ContextVar("workflow_model_profile", default=None)
+
+
+def current_model_profile():
+    return _profile.get()
+
+
+@contextmanager
+def model_profile(profile):
+    token = _profile.set(profile)
+    try:
+        yield
+    finally:
+        _profile.reset(token)
 
 
 def current_thinking_mode() -> ThinkingMode | None:

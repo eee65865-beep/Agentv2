@@ -8,7 +8,8 @@ from pydantic import ValidationError
 
 from workflow_studio.agents.prompts.design import build_design_prompt
 from workflow_studio.llm import get_llm
-from workflow_studio.llm.errors import LLMStructuredOutputError, LLMStructuredOutputUnsupported
+from workflow_studio.budget import invoke_model
+from workflow_studio.llm.errors import LLMStructuredOutputError, LLMStructuredOutputUnsupported, LLMTruncatedOutputError
 from workflow_studio.state.design import DesignOutput
 from workflow_studio.state.requirements import RequirementsOutput
 from workflow_studio.state.validation import (
@@ -72,28 +73,32 @@ def design_system(
     repair_prompt = build_design_prompt(instructions, repair=True)
     values = {
         "requirements_json": validated.model_dump_json(),
-        "requirement_catalog": json.dumps([
-            {"id": f"FR-{i}", "description": description}
-            for i, description in enumerate(validated.functional_requirements, start=1)
-        ], ensure_ascii=False),
+        "requirement_catalog": json.dumps(validated.requirement_catalog(), ensure_ascii=False),
         "user_request": user_request.strip() if user_request and user_request.strip() else "未提供原始需求；以结构化需求为准。",
     }
     formatted = prompt.invoke(values)
     llm = get_llm()
+    native_repair = False
+    native = None
     try:
-        native = llm.invoke_structured(formatted, DesignOutput)
+        native = invoke_model(llm, formatted, schema=DesignOutput)
+        native = DesignOutput.model_validate(native.model_dump())
         return _validate_consistency(native, validated)
     except (LLMStructuredOutputUnsupported, LLMStructuredOutputError):
         pass
-    except _DesignConsistencyError as error:
-        # A schema-valid native response can still omit a constraint or FR.
+    except (ValidationError, _DesignConsistencyError) as error:
+        native_repair = True
+        # Invalid native fields or missing requirements use the bounded JSON repair.
         formatted = repair_prompt.invoke({
             **values, "validation_feedback": _feedback(error),
-            "invalid_output": native.model_dump_json(),
+            "invalid_output": native.model_dump_json() if native is not None else "原生结构化响应未通过校验。",
         })
 
     for attempt in range(max_repair_attempts + 1):
-        text = llm.invoke(formatted).text
+        message = invoke_model(llm, formatted, repair=native_repair or attempt > 0)
+        if message.response_metadata.get("finish_reason") in ("length", "max_tokens", "max_output_tokens") or message.response_metadata.get("status") == "incomplete":
+            raise LLMTruncatedOutputError("Design output was truncated.")
+        text = message.text
         try:
             return _validate_consistency(_parse_json(text), validated)
         except (ValidationError, _DesignConsistencyError) as error:

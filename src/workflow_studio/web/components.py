@@ -8,6 +8,8 @@ from workflow_studio.exporters.documents import code_zip, design_markdown, requi
 from workflow_studio.state.coding import CodingOutput
 from workflow_studio.state.design import DesignOutput
 from workflow_studio.state.requirements import RequirementsOutput
+from workflow_studio.state.review_policy import evaluate_review
+from workflow_studio.budget import STOP_LABELS
 from workflow_studio.web.configuration import ConfigurationView
 from workflow_studio.web.controller import AGENTS, PageState, agent_statuses
 from workflow_studio.web.review import render_review
@@ -17,13 +19,11 @@ DESCRIPTIONS = ["梳理目标与验收标准", "设计模块与技术方案", "�
 
 
 def render_header(config: ConfigurationView) -> None:
-    st.caption("LANGGRAPH × DEEPSEEK · 多智能体开发工作台")
-    st.title("Multi-Agent Workflow Studio")
-    st.markdown("从一句开发需求出发，让三个 Agent 协作完成 **需求分析 → 系统设计 → 代码生成**。")
+    st.title("Workflow Studio")
     first, second = st.columns([2, 1])
-    first.caption(f"当前模型：{config.model_name}")
+    first.caption(f"{config.model_name} · 开发工作台")
     if config.configured:
-        second.success("API 配置：已配置", icon="✅")
+        second.caption("● 已就绪")
     else:
         second.warning("API 配置：未配置", icon="⚠️")
     if config.error:
@@ -47,6 +47,10 @@ def render_progress(page: PageState) -> None:
     current = next((LABELS[key] for key, value in statuses.items() if value == "运行中"), None)
     if current is None:
         current = next((LABELS[key] for key, value in statuses.items() if value == "执行失败"), "全部完成" if completed == total else "等待启动")
+    if page.result and page.result.status == "stopped":
+        current = "已停止"
+    if page.waiting:
+        current = "等待澄清"
     first, second = st.columns([2, 1])
     first.caption(f"当前节点：{current}")
     second.caption(f"运行时间：{page.elapsed:.1f} 秒")
@@ -55,10 +59,20 @@ def render_progress(page: PageState) -> None:
     render_run_metadata(page.events)
     if page.error:
         st.error(page.error)
+    elif page.result and page.result.status == "stopped":
+        st.warning(STOP_LABELS[page.result.budget.stop_reason] + "；已保留有效的部分结果，可查看、下载或启动新任务。")
     elif page.result and page.result.status == "completed":
-        st.success("模型静态审查通过，未执行真实测试。" if page.review_enabled else "三个 Agent 已完成协作，结果已保存到当前会话。")
+        st.success("静态审查门禁通过，未执行真实测试。" if page.review_enabled else "三个 Agent 已完成协作，结果已保存到当前会话。")
     elif page.result and page.result.status == "completed_with_issues":
-        st.warning("已达到修复次数上限，代码审查仍未通过。结果可查看和下载，但不代表交付或测试通过。")
+        if page.result.review and evaluate_review(page.result.review).action == "manual_required":
+            st.warning("代码审查仍未通过：需求或设计问题需要处理，已停止自动代码修复。结果可查看和下载。")
+        else:
+            st.warning("已达到修复次数上限，代码审查仍未通过。结果可查看和下载，但不代表交付或测试通过。")
+    if page.snapshot and page.snapshot.get("budget"):
+        usage = page.snapshot["budget"]
+        limits = usage["limits"]
+        st.caption(f"全局预算 · 模型调用 {usage['logical_calls']}/{limits['max_logical_calls']} · HTTP {usage['http_attempts']}/{limits['max_http_attempts']} · 格式修复 {usage['format_repairs']}/{limits['max_format_repairs']} · 节点 {usage['node_executions']}/{limits['max_node_executions']}")
+        st.caption(f"已报告 Token：{usage['known_tokens']}；未知用量调用：{usage['unknown_usage_calls']}；未知用量预留：{usage['unknown_tokens_reserved']}（预留不是实测）")
 
 
 def _list(title: str, values: list[str]) -> None:
@@ -73,8 +87,21 @@ def _list(title: str, values: list[str]) -> None:
 def _requirements(data: RequirementsOutput) -> None:
     st.subheader(data.project_name)
     st.write(data.summary)
-    for title, values in [("功能需求", data.functional_requirements), ("非功能需求", data.non_functional_requirements), ("约束条件", data.constraints), ("假设与待确认", data.assumptions), ("验收标准", data.acceptance_criteria)]:
+    if data.open_questions:
+        _list("待澄清问题", [f"{item.id} · {'阻断' if item.blocking else '非阻断'}：{item.question}" for item in data.open_questions])
+    functional, acceptance = data.functional_requirements, data.acceptance_criteria
+    if data.contract_version == 2:
+        st.caption("需求契约 v2 · 已记录原文引用和验收关联；不代表功能已验证。")
+        functional = [f"{item.id}：{item.description}" for item in data.requirement_details]
+        acceptance = [f"{item.id} → {', '.join(item.requirement_ids)}：{item.description}" for item in data.acceptance_details]
+    else:
+        st.caption("旧版需求 · 未记录持久需求 ID、原文引用和验收关联。")
+    for title, values in [("功能需求", functional), ("非功能需求", data.non_functional_requirements), ("约束条件", data.constraints), ("假设与待确认", data.assumptions), ("验收标准", acceptance)]:
         _list(title, values)
+    if data.contract_version == 2:
+        with st.expander("需求原文来源"):
+            for item in data.requirement_details:
+                _list(item.id, item.source_quotes)
 
 
 def _design(data: DesignOutput) -> None:
@@ -92,7 +119,7 @@ def _design(data: DesignOutput) -> None:
 
 
 def _code(data: CodingOutput) -> None:
-    st.caption(f"共 {len(data.files)} 个文件 · 已做结构、路径与 Python 语法校验，未执行生成代码。")
+    st.caption(f"共 {len(data.files)} 个文件 · 生成阶段已做结构、路径与 Python 语法校验；隔离执行结果见单独验证报告。")
     languages = {"python": "python", "py": "python", "javascript": "javascript", "js": "javascript", "typescript": "typescript", "json": "json", "markdown": "markdown", "md": "markdown", "html": "html", "css": "css", "toml": "toml", "yaml": "yaml", "sql": "sql", "bash": "bash", "shell": "bash"}
     for file in data.files:
         with st.expander(file.path, expanded=True):

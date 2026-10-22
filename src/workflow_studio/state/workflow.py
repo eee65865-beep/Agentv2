@@ -11,16 +11,18 @@ from typing import Annotated, Literal, Self, TypedDict, cast
 from uuid import UUID, uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from workflow_studio.budget import BudgetSnapshot
 
 from workflow_studio.state.review import MAX_REVISIONS, ReviewOutput, ReviewRecord, ReviewStatus, merge_review_history, validate_review_context
 from workflow_studio.state.telemetry import LLMCallRecord, TokenUsage
 from workflow_studio.state.coding import CodingOutput
+from workflow_studio.state.patch import RepairReceipt, validate_repair_receipts
 from workflow_studio.state.design import DesignOutput
-from workflow_studio.state.requirements import RequirementsOutput
+from workflow_studio.state.requirements import ClarificationAnswer, OpenQuestion, RequirementsOutput, validate_requirement_sources
 from workflow_studio.state.validation import DesignConsistencyError, validate_design_requirements
 
 Payload = dict[str, object]
-EventType = Literal["initialized", "started", "completed", "failed", "info"]
+EventType = Literal["initialized", "started", "completed", "failed", "info", "stopped", "waiting"]
 
 
 class WorkflowStatus(StrEnum):
@@ -29,6 +31,8 @@ class WorkflowStatus(StrEnum):
     COMPLETED = "completed"
     COMPLETED_WITH_ISSUES = "completed_with_issues"
     FAILED = "failed"
+    STOPPED = "stopped"
+    WAITING = "waiting"
 
 
 class WorkflowStateError(ValueError):
@@ -75,17 +79,21 @@ class WorkflowEvent(BaseModel):
     error_type: str | None = Field(default=None, description="安全异常类别，不保存原始异常正文。")
     llm_calls: tuple[LLMCallRecord, ...] = Field(default=(), description="包括格式修复调用；不包含 SDK 内部不可观察的重试细节。")
     token_usage: TokenUsage = Field(default_factory=TokenUsage, description="可完整观察到的各项 token 总数；缺失项为 null。")
+    repair_receipt: RepairReceipt | None = None
 
     @field_validator("input_fields", "output_fields")
     @classmethod
     def safe_field_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        allowed = {"user_request", "requirements", "design", "code", "status", "current_agent", "events", "error", "review", "review_status", "revision_count", "review_history"}
+        allowed = {"user_request", "requirements", "design", "code", "status", "current_agent", "events", "error", "review", "review_status", "revision_count", "review_history", "budget"}
+        allowed |= {"clarifications", "awaiting_questions", "design_feedback"}
         if len(set(value)) != len(value) or any(field not in allowed for field in value):
             raise ValueError("invalid_state_field_names")
         return value
 
     @model_validator(mode="after")
     def valid_timing(self) -> Self:
+        if self.repair_receipt is not None and (self.agent_name != "coding_agent" or self.event_type not in ("completed", "stopped") or self.revision_count < 1):
+            raise ValueError("patch_receipt_requires_committed_coding_revision")
         if self.ended_at is not None and (self.started_at is None or self.ended_at < self.started_at):
             raise ValueError("invalid_event_time_range")
         if self.event_type == "started" and self.ended_at is not None:
@@ -195,11 +203,13 @@ def _status_channel(previous: WorkflowStatus | str, incoming: WorkflowStatus | s
     except (ValueError, TypeError):
         raise WorkflowStateError("Unknown workflow status.") from None
     transitions = {
-        WorkflowStatus.PENDING: {WorkflowStatus.PENDING, WorkflowStatus.RUNNING, WorkflowStatus.FAILED},
-        WorkflowStatus.RUNNING: {WorkflowStatus.RUNNING, WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_ISSUES, WorkflowStatus.FAILED},
+        WorkflowStatus.PENDING: {WorkflowStatus.PENDING, WorkflowStatus.RUNNING, WorkflowStatus.FAILED, WorkflowStatus.STOPPED},
+        WorkflowStatus.RUNNING: {WorkflowStatus.RUNNING, WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_ISSUES, WorkflowStatus.FAILED, WorkflowStatus.STOPPED, WorkflowStatus.WAITING},
+        WorkflowStatus.WAITING: {WorkflowStatus.WAITING, WorkflowStatus.RUNNING, WorkflowStatus.FAILED, WorkflowStatus.STOPPED},
         WorkflowStatus.COMPLETED: {WorkflowStatus.COMPLETED},
         WorkflowStatus.COMPLETED_WITH_ISSUES: {WorkflowStatus.COMPLETED_WITH_ISSUES},
         WorkflowStatus.FAILED: {WorkflowStatus.FAILED},
+        WorkflowStatus.STOPPED: {WorkflowStatus.STOPPED},
     }
     if target not in transitions[current]:
         raise WorkflowStateError("Invalid workflow status transition.")
@@ -222,6 +232,10 @@ class WorkflowState(TypedDict):
     max_revisions: int
     review_status: ReviewStatus
     review_history: Annotated[list[ReviewRecord], merge_review_history]
+    budget: Payload | None
+    clarifications: list[Payload]
+    awaiting_questions: list[Payload]
+    design_feedback: str | None
 
 
 class WorkflowUpdate(TypedDict, total=False):
@@ -238,6 +252,10 @@ class WorkflowUpdate(TypedDict, total=False):
     revision_count: int
     review_status: ReviewStatus
     review_history: list[ReviewRecord]
+    budget: Payload | None
+    clarifications: list[Payload]
+    awaiting_questions: list[Payload]
+    design_feedback: str | None
 
 
 class _ValidatedState(BaseModel):
@@ -252,6 +270,10 @@ class _ValidatedState(BaseModel):
     current_agent: str
     error: str | None
     events: list[WorkflowEvent]
+    budget: BudgetSnapshot | None = None
+    clarifications: list[ClarificationAnswer] = Field(default_factory=list, max_length=48)
+    awaiting_questions: list[OpenQuestion] = Field(default_factory=list, max_length=16)
+    design_feedback: str | None = Field(default=None, max_length=32768)
     review: ReviewOutput | None = None
     review_enabled: bool = Field(default=False, strict=True)
     revision_count: int = Field(default=0, ge=0, le=MAX_REVISIONS, strict=True)
@@ -263,9 +285,15 @@ class _ValidatedState(BaseModel):
     def consistent(self) -> Self:
         _run_id_channel("", self.run_id)
         _request_channel("", self.user_request)
+        if (self.status == WorkflowStatus.STOPPED) != (self.budget is not None and self.budget.stop_reason is not None):
+            raise WorkflowStateError("Stopped state requires an explicit budget stop reason.")
         if self.current_agent and not self.current_agent.strip():
             raise WorkflowStateError("current_agent cannot be whitespace only.")
         self.requirements = _requirements_channel(None, self.requirements)
+        if self.requirements is not None:
+            validate_requirement_sources(RequirementsOutput.model_validate(self.requirements), (self.user_request, *(item.answer for item in self.clarifications)))
+        if self.status == WorkflowStatus.WAITING and not self.awaiting_questions:
+            raise WorkflowStateError("Waiting state requires clarification questions.")
         self.design = _design_channel(None, self.design)
         self.code = _code_channel(None, self.code)
         if self.design is not None:
@@ -285,7 +313,13 @@ class _ValidatedState(BaseModel):
         if self.status in (WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_ISSUES) and any(value is None for value in (self.requirements, self.design, self.code)):
             raise WorkflowStateError("Completed state requires all three Agent outputs.")
         self.review_history = merge_review_history([], self.review_history)
-        validate_review_context(self.run_id, self.status, self.review_enabled, self.revision_count, self.max_revisions, self.review_status, self.review, self.review_history, CodingOutput.model_validate(self.code) if self.code else None)
+        validate_review_context(
+            self.run_id, self.status, self.review_enabled, self.revision_count, self.max_revisions,
+            self.review_status, self.review, self.review_history, CodingOutput.model_validate(self.code) if self.code else None,
+            RequirementsOutput.model_validate(self.requirements) if self.requirements is not None else None,
+            DesignOutput.model_validate(self.design) if self.design is not None else None,
+        )
+        validate_repair_receipts(self.events, self.code, self.review_history, self.revision_count, self.requirements, self.design)
         return self
 
 
@@ -326,6 +360,18 @@ def validate_update(state: WorkflowState, update: Mapping[str, object]) -> Workf
     if set(update) - allowed:
         raise WorkflowStateError("Unknown or immutable state fields in update.")
     current = validate_state(state)
+    if "budget" in update and current["budget"] is not None:
+        if update["budget"] is None:
+            raise WorkflowStateError("Run budget cannot be removed.")
+        try:
+            incoming = BudgetSnapshot.model_validate(update["budget"]).model_dump(mode="json")
+        except ValidationError:
+            raise WorkflowStateError("Invalid run budget snapshot.") from None
+        if incoming["limits"] != current["budget"]["limits"]:
+            raise WorkflowStateError("Run budget limits cannot change during execution.")
+        counters = ("logical_calls", "http_attempts", "format_repairs", "node_executions", "known_tokens", "unknown_usage_calls", "elapsed_seconds")
+        if any(incoming[field] < current["budget"][field] for field in counters):
+            raise WorkflowStateError("Run budget counters cannot decrease.")
     reducers = {
         "requirements": _requirements_channel, "design": _design_channel,
         "code": _code_channel, "status": _status_channel, "events": merge_events,

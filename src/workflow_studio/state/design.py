@@ -3,9 +3,9 @@
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from workflow_studio.state.requirements import RequirementId
 
 DesignText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-RequirementId = Annotated[str, StringConstraints(pattern=r"^FR-[1-9][0-9]*$")]
 
 
 class ModuleDesign(BaseModel):

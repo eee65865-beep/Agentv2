@@ -45,4 +45,6 @@ def open_history(page: PageState, run_id: str) -> bool:
     page.error = friendly_error(result.error) if result.status == "failed" else None
     page.persisted_run_id, page.persistence_error = result.run_id, None
     page.history_error, page.from_history = None, True
+    page.durable_thread_id, page.checkpoint_id, page.durable_status = None, None, None
+    page.durable_attempts, page.waiting = [], False
     return True

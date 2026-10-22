@@ -8,6 +8,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 from workflow_studio.state.result import WorkflowResult
 from workflow_studio.state.review import MAX_REVISIONS, ReviewOutput, ReviewRecord, ReviewStatus
 from workflow_studio.state.workflow import WorkflowStatus
+from workflow_studio.budget import BudgetSnapshot
+from workflow_studio.state.requirements import ClarificationAnswer
 
 MAX_JSON_BYTES = 4 * 1024 * 1024
 MAX_RUN_BYTES = 8 * 1024 * 1024
@@ -16,7 +18,9 @@ DATA_FILES = {"requirements.json", "design.json", "code.json", "events.json"}
 
 class RunMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2, 3] = 1
+    budget: BudgetSnapshot | None = None
+    clarifications: list[ClarificationAnswer] = Field(default_factory=list, max_length=48)
     run_id: str
     status: WorkflowStatus
     saved_at: AwareDatetime
@@ -37,8 +41,12 @@ class RunMetadata(BaseModel):
         expected = DATA_FILES | ({"review.json"} if self.review_enabled else set())
         if set(self.sha256) != expected or any(len(value) != 64 or any(char not in "0123456789abcdef" for char in value) for value in self.sha256.values()):
             raise ValueError("invalid_manifest")
-        if self.status not in (WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_ISSUES, WorkflowStatus.FAILED):
+        if self.status not in (WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_ISSUES, WorkflowStatus.FAILED, WorkflowStatus.STOPPED):
             raise ValueError("only_terminal_results_are_persisted")
+        if (self.schema_version == 1 and self.budget is not None) or (self.schema_version == 2 and self.budget is None):
+            raise ValueError("budget_archive_version_mismatch")
+        if (self.schema_version == 3) != bool(self.clarifications):
+            raise ValueError("clarification_archive_version_mismatch")
         if self.started_at and self.ended_at and self.ended_at < self.started_at:
             raise ValueError("invalid_time_range")
         return self

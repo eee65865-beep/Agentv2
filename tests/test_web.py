@@ -131,7 +131,7 @@ def test_failure_preserves_partial_result_and_never_completes(agents: dict[str, 
 
 
 def test_unexpected_worker_failure_is_visible(monkeypatch: pytest.MonkeyPatch) -> None:
-    def broken(_: str) -> Iterator[WorkflowStreamPacket]:
+    def broken(_: str, **kwargs) -> Iterator[WorkflowStreamPacket]:
         raise RuntimeError("private-secret")
         yield  # pragma: no cover
     monkeypatch.setattr("workflow_studio.web.controller.stream_workflow_events", broken)
@@ -145,9 +145,10 @@ def test_unexpected_worker_failure_is_visible(monkeypatch: pytest.MonkeyPatch) -
 def test_page_initial_render_and_examples(agents: dict[str, MagicMock]) -> None:
     at = AppTest.from_file(str(APP), default_timeout=10).run()
     assert not at.exception
-    assert at.title[0].value == "Multi-Agent Workflow Studio"
-    assert [tab.label for tab in at.tabs] == ["需求分析", "系统设计", "代码生成", "执行日志"]
-    assert [metric.value for metric in at.metric] == ["等待中"] * 3
+    assert at.title[0].value == "Workflow Studio"
+    assert not at.tabs and not at.metric
+    assert any("今天想构建什么" in item.value for item in at.markdown)
+    assert at.text_area(key="request_input").label == "开发需求"
     for choice in list(EXAMPLES)[1:]:
         at.selectbox(key="example_choice").select(choice).run()
         assert at.text_area(key="request_input").value == EXAMPLES[choice]
@@ -287,7 +288,7 @@ def test_trace_metadata_and_read_write_contract(agents: dict[str, MagicMock]) ->
         assert completed.elapsed_seconds >= 0
         assert completed.input_fields == started.input_fields == fields
         output = ("requirements", "design", "code")[index]
-        assert completed.output_fields == (output, "status", "current_agent", "events")
+        assert completed.output_fields == (output, "status", "budget", "current_agent", "events")
         assert completed.model_name == "mock-model"
         assert completed.token_usage.total_tokens is None
         assert WorkflowEvent.model_validate_json(completed.model_dump_json()) == completed
@@ -332,7 +333,7 @@ def test_timeline_agent_details_and_failure_reason(agents: dict[str, MagicMock])
     failed = page.events[-1]
     assert failed.error_type == "RuntimeError" and failed.elapsed_seconds >= 0
     assert failed.input_fields == ("requirements",)
-    assert failed.output_fields == ("status", "current_agent", "error", "events")
+    assert failed.output_fields == ("status", "current_agent", "error", "events", "budget")
     assert any("失败原因" in warning.value and "RuntimeError" in warning.value for warning in at.warning)
     assert any("开始时间" in caption.value for caption in at.caption)
     assert any("结束时间" in caption.value for caption in at.caption)
@@ -364,7 +365,7 @@ def test_page_renders_reported_token_usage(agents: dict[str, MagicMock]) -> None
 
 def test_stream_end_without_terminal_state_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     from workflow_studio.state.workflow import create_initial_state
-    def incomplete(request: str) -> Iterator[WorkflowStreamPacket]:
+    def incomplete(request: str, **kwargs) -> Iterator[WorkflowStreamPacket]:
         yield WorkflowStreamPacket(kind="state", state=create_initial_state(request))
     monkeypatch.setattr("workflow_studio.web.controller.stream_workflow_events", incomplete)
     page = PageState()

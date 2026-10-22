@@ -16,7 +16,7 @@ def validate_design_requirements(design: DesignOutput, requirements: Requirement
     """
     if design.preserved_constraints != requirements.constraints:
         raise DesignConsistencyError("preserved_constraints_must_match_input_exactly")
-    expected_ids = {f"FR-{i}" for i in range(1, len(requirements.functional_requirements) + 1)}
+    expected_ids = {item["id"] for item in requirements.requirement_catalog()}
     actual_ids = {key for module in design.modules for key in module.requirement_ids}
     if actual_ids - expected_ids:
         raise DesignConsistencyError("unknown_functional_requirement_id")

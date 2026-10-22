@@ -18,7 +18,7 @@ class RunTrace:
 def summarize_run(events: list[WorkflowEvent]) -> RunTrace:
     models = tuple(dict.fromkeys(event.model_name for event in events if event.model_name))
     started = next((event.started_at or event.timestamp for event in events if event.event_type == "started"), None)
-    terminal = next((event for event in reversed(events) if event.status in (WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_ISSUES, WorkflowStatus.FAILED)), None)
+    terminal = next((event for event in reversed(events) if event.status in (WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_ISSUES, WorkflowStatus.FAILED, WorkflowStatus.STOPPED)), None)
     return RunTrace(
         run_id=events[0].run_id if events else None,
         status=events[-1].status if events else WorkflowStatus.PENDING,
